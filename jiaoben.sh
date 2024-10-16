@@ -8,7 +8,7 @@ scripts=$(realpath $0)
 scripts_dir=$(dirname ${scripts})
 
 # 配置变量（来自 box.config）
-bin_name="sing-box"
+bin_name="clash"
 
 redir_port="7891"
 tproxy_port="1536"
@@ -812,6 +812,10 @@ optimize_network() {
 
   # 优化 TCP 参数
   sysctl -w net.ipv4.tcp_fastopen=3
+  echo 3 > /proc/sys/net/ipv4/tcp_fastopen
+  # 启用 TCP  拥塞控制算法
+  sysctl -w net.core.default_qdisc=fq
+  
   sysctl -w net.ipv4.tcp_slow_start_after_idle=0
   sysctl -w net.ipv4.tcp_no_metrics_save=1
   sysctl -w net.ipv4.tcp_fin_timeout=15
@@ -832,6 +836,7 @@ optimize_network() {
   sysctl -w net.core.netdev_max_backlog=8192
 
   # 优化 IPv4 参数
+  sysctl -w net.ipv4.tcp_window_scaling=1
   sysctl -w net.ipv4.tcp_rmem='4096 87380 67108864'
   sysctl -w net.ipv4.tcp_wmem='4096 65536 67108864'
   sysctl -w net.ipv4.udp_rmem_min=8192
@@ -841,14 +846,23 @@ optimize_network() {
   # Clash 特定优化
   sysctl -w net.ipv4.ip_forward=1
   sysctl -w net.ipv4.tcp_max_syn_backlog=8192
+  sysctl -w net.ipv4.tcp_fin_timeout=30
   sysctl -w net.ipv4.tcp_synack_retries=2
   sysctl -w net.ipv4.tcp_syn_retries=2
+  sysctl -w net.ipv4.tcp_keepalive_time=1200
+  
+  iptables -A FORWARD -i ${phy_if} -o ${tun_device} -j ACCEPT
+  iptables -A FORWARD -i ${tun_device} -o ${phy_if} -j ACCEPT
+  iptables -t nat -A POSTROUTING -o ${phy_if} -j MASQUERADE
 
   # 优化网络接口队列长度
   for i in $(ls /sys/class/net); do
     [ -e /sys/class/net/$i/tx_queue_len ] && echo 10000 > /sys/class/net/$i/tx_queue_len
   done
-
+  # 清理连接跟踪表
+  clean_conntrack() {
+    conntrack -F
+  }
   log Info "网络优化设置完成。"
 }
 
