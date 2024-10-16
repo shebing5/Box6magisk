@@ -19,7 +19,7 @@ tun_device="tun0"
 
 # 启用 clash 订阅配置
 sub_enable=false
-subscribe="http://127.0.0.1"
+subscribe="http://0.0.0.0"
 nodes=''
 
 box_user_group="root:net_admin"
@@ -31,13 +31,13 @@ pid_file="${run_path}/${bin_name}.pid"
 tunid_file="${run_path}/tun.id"
 clash_path="${box_path}/clash"
 
-intranet=(0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 192.0.0.0/24 192.0.2.0/24 192.88.99.0/24 192.168.0.0/16 198.51.100.0/24 203.0.113.0/24 224.0.0.0/4 240.0.0.0/4 255.255.255.255/32)
+intranet=(0.0.0.0/8 10.0.0.0/8  192.168.1.1/24 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 192.0.0.0/24 192.0.2.0/24 192.88.99.0/24 192.168.0.0/16 198.51.100.0/24 203.0.113.0/24 224.0.0.0/4 240.0.0.0/4 255.255.255.255/32)
 intranet6=(::/128 ::1/128 ::ffff:0:0/96 100::/64 64:ff9b::/96 2001::/32 2001:10::/28 2001:20::/28 2001:db8::/32 2002::/16 fe80::/10 ff00::/8)
 
-ipv6="disable"
+ipv6="enable"
 
 phy_if="wlan0" # APP模式需设置出口网卡名称
-proxy_method="TPROXY"
+proxy_method="MIXED"
 # REDIRECT: TCP only / TPROXY: TCP + UDP / MIXED: REDIRECT TCP + TUN UDP / APP: TUN
 
 proxy_mode="blacklist"
@@ -236,9 +236,17 @@ display_bin_status() {
   fi
 }
 
+# Disable IPv6 for WebRTC
+disable_ipv6_webrtc() {
+  log Info "Disabling IPv6 for WebRTC."
+  ip6tables -A OUTPUT -p udp --dport 3478 -j DROP
+  ip6tables -A OUTPUT -p udp --dport 19302:19305 -j DROP
+}
+
 # 启动服务
 start_service() {
   if check_permission ; then
+    disable_ipv6_webrtc
     if [ "${proxy_method}" = "APP" ] ; then
       log Info "通过外部应用运行代理"
       sysctl net.ipv4.ip_forward=1 >/dev/null 2>&1
@@ -250,7 +258,6 @@ start_service() {
       nohup "${scripts_dir}"/monitor.service > ${run_path}/monitor.log 2>&1 &
       return 0
     fi
-
     # 新增：在启动服务前清理可能干扰的iptables规则
     log Info "清理可能干扰的 iptables 规则。"
     tproxy_control disable >> ${run_path}/run.log 2>> ${run_path}/run_error.log
@@ -363,6 +370,11 @@ monitor_service() {
   done
 }
 
+
+
+
+
+
 # box.tproxy 功能
 tproxy_control() {
   id="222"
@@ -391,6 +403,7 @@ tproxy_control() {
             iptables="ip6tables -w 100"
             intranet6[${#intranet6[@]}]=$(ip address | grep -w inet6 | grep -v ::1 | grep -v fe80 | awk '{print $2}')
             start_tproxy && log Info "创建 ip6tables 透明代理规则完成。" || (log Error "创建 ip6tables 透明代理规则失败。" && stop_tproxy >> /dev/null 2>&1)
+            prevent_ipv6_webrtc_leak  # 新增调用防泄漏函数
           else
             disable_ipv6
             log Warn "禁用 IPv6。"
@@ -410,7 +423,7 @@ tproxy_control() {
         log Info "创建 iptables 透明代理规则。"
         iptables="iptables -w 100"
         start_redirect && log Info "创建 iptables 透明代理规则完成。" || (log Error "创建 iptables 透明代理规则失败。" && stop_redirect >> /dev/null 2>&1)
-        [ "${ipv6}" = "enable" ] && enable_ipv6 && log Info "启用 IPv6。" || (disable_ipv6 && log Warn "禁用 IPv6。")
+        [ "${ipv6}" = "enable" ] && enable_ipv6 && prevent_ipv6_webrtc_leak && log Info "启用 IPv6 并防止泄漏。" || (disable_ipv6 && log Warn "禁用 IPv6。")
       fi
       ;;
     disable)
@@ -481,8 +494,8 @@ start_redirect() {
   if [ "${bin_name}" = "clash" ] ; then
     ${iptables} -t nat -A BOX_EXTERNAL -p udp --dport 53 -j REDIRECT --to-ports ${clash_dns_port}
     ${iptables} -t nat -A BOX_LOCAL -p udp --dport 53 -j REDIRECT --to-ports ${clash_dns_port}
-    ${iptables} -t nat -A BOX_EXTERNAL -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
-    ${iptables} -t nat -A BOX_LOCAL -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
+    ${iptables} -t nat -A BOX_EXTERNAL -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
+    ${iptables} -t nat -A BOX_LOCAL -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
   #  else
   #    其他类型的入站应在此处添加以接收 DNS 流量而不是嗅探
   #    ${iptables} -t nat -A BOX_EXTERNAL -p udp --dport 53 -j REDIRECT --to-ports ${redir_port}
@@ -545,7 +558,7 @@ start_redirect() {
 
   ${iptables} -t nat -I OUTPUT -j BOX_LOCAL
 
-  ${iptables} -A OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${redir_port} -j REJECT
+  ${iptables} -A OUTPUT -d 0.0.0.0 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${redir_port} -j REJECT
 }
 
 stop_redirect() {
@@ -553,8 +566,8 @@ stop_redirect() {
 
   ${iptables} -t nat -D OUTPUT -j BOX_LOCAL
 
-  ${iptables} -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${redir_port} -j REJECT
-  ${iptables} -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner 0 --gid-owner 3005 -m tcp --dport ${redir_port} -j REJECT
+  ${iptables} -D OUTPUT -d 0.0.0.0 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${redir_port} -j REJECT
+  ${iptables} -D OUTPUT -d 0.0.0.0 -p tcp -m owner --uid-owner 0 --gid-owner 3005 -m tcp --dport ${redir_port} -j REJECT
 
   ${iptables} -t nat -F BOX_EXTERNAL
   ${iptables} -t nat -X BOX_EXTERNAL
@@ -711,7 +724,7 @@ start_tproxy() {
   if [ "${iptables}" = "ip6tables -w 100" ] ; then
     ${iptables} -A OUTPUT -d ::1 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${tproxy_port} -j REJECT
   else
-    ${iptables} -A OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${tproxy_port} -j REJECT
+    ${iptables} -A OUTPUT -d 0.0.0.0 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${tproxy_port} -j REJECT
   fi
 
   # clash 特定规则
@@ -732,8 +745,8 @@ start_tproxy() {
 
     ${iptables} -t nat -I OUTPUT -j CLASH_DNS_LOCAL
 
-    ${iptables} -t nat -I OUTPUT -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
-    ${iptables} -t nat -I PREROUTING -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
+    ${iptables} -t nat -I OUTPUT -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
+    ${iptables} -t nat -I PREROUTING -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
   fi
 }
 
@@ -765,8 +778,8 @@ stop_tproxy() {
     ${iptables} -D OUTPUT -d ::1 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${tproxy_port} -j REJECT
     ${iptables} -D OUTPUT -d ::1 -p tcp -m owner --uid-owner 0 --gid-owner 3005 -m tcp --dport ${tproxy_port} -j REJECT
   else
-    ${iptables} -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${tproxy_port} -j REJECT
-    ${iptables} -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner 0 --gid-owner 3005 -m tcp --dport ${tproxy_port} -j REJECT
+    ${iptables} -D OUTPUT -d 0.0.0.0 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${tproxy_port} -j REJECT
+    ${iptables} -D OUTPUT -d 0.0.0.0 -p tcp -m owner --uid-owner 0 --gid-owner 3005 -m tcp --dport ${tproxy_port} -j REJECT
   fi
 
   # Android ip6tables 没有 nat 表
@@ -777,16 +790,22 @@ stop_tproxy() {
   ${iptables} -t nat -X CLASH_DNS_EXTERNAL
   ${iptables} -t nat -F CLASH_DNS_LOCAL
   ${iptables} -t nat -X CLASH_DNS_LOCAL
-  ${iptables} -t nat -D OUTPUT -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
-  ${iptables} -t nat -D PREROUTING -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
+  ${iptables} -t nat -D OUTPUT -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
+  ${iptables} -t nat -D PREROUTING -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
 }
+
 
 enable_ipv6() {
   echo 1 > /proc/sys/net/ipv6/conf/all/accept_ra
-  echo 1 > /proc/sys/net/ipv6/conf/wlan0/accept_ra
+  echo 1 > /proc/sys/net/ipv6/conf/wlan0/accpt_ra
   echo 0 > /proc/sys/net/ipv6/conf/all/disable_ipv6
   echo 0 > /proc/sys/net/ipv6/conf/default/disable_ipv6
   echo 0 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6
+
+  # Prevent local IPv6 leaks
+  ip6tables -A OUTPUT -d fe80::/10 -j DROP
+  ip6tables -A OUTPUT -d ::1/128 -j DROP
+  ip6tables -A OUTPUT -d ff00::/8 -j DROP
 }
 
 disable_ipv6() {
@@ -795,6 +814,11 @@ disable_ipv6() {
   echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
   echo 1 > /proc/sys/net/ipv6/conf/default/disable_ipv6
   echo 1 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6
+
+  # Clean up IPv6 rules
+  ip6tables -D OUTPUT -d fe80::/10 -j DROP
+  ip6tables -D OUTPUT -d ::1/128 -j DROP
+  ip6tables -D OUTPUT -d ff00::/8 -j DROP
 }
 
 # 新增: 定期清理连接跟踪表函数
@@ -854,6 +878,22 @@ optimize_network() {
   iptables -A FORWARD -i ${phy_if} -o ${tun_device} -j ACCEPT
   iptables -A FORWARD -i ${tun_device} -o ${phy_if} -j ACCEPT
   iptables -t nat -A POSTROUTING -o ${phy_if} -j MASQUERADE
+  # Set iptables rules for LAN sharing
+  iptables -I FORWARD -o ${tun_device} -j ACCEPT
+  iptables -I FORWARD -i ${tun_device} -j ACCEPT
+  iptables -t nat -A POSTROUTING -o ${tun_device} -j MASQUERADE
+  # Set ip rule for TPROXY
+  ip rule add fwmark 0x1 lookup 100
+  ip route add local 0.0.0.0/0 dev lo table 100
+
+  # IPv6 rules if enabled
+  if [ "${ipv6}" = "enable" ]; then
+    ip6tables -I FORWARD -o ${tun_device} -j ACCEPT
+    ip6tables -I FORWARD -i ${tun_device} -j ACCEPT
+    ip6tables -t nat -A POSTROUTING -o ${tun_device} -j MASQUERADE
+    ip -6 rule add fwmark 0x1 lookup 100
+    ip -6 route add local ::/0 dev lo table 100
+  fi
 
   # 优化网络接口队列长度
   for i in $(ls /sys/class/net); do
@@ -901,8 +941,3 @@ case "$1" in
     ;;
 esac
 
-# 应用网络优化设置
-optimize_network
-
-# 在主程序中添加定期清理
-(while true; do sleep 3600; clean_conntrack; done) &
