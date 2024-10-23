@@ -9,7 +9,7 @@ scripts_dir=$(dirname ${scripts})
 
 # 配置变量（来自 box.config）
 bin_name="clash"
-tun_port="1537"
+
 redir_port="7891"
 tproxy_port="1536"
 clash_dns_port="1053"
@@ -19,7 +19,7 @@ tun_device="tun0"
 
 # 启用 clash 订阅配置
 sub_enable=false
-subscribe="http://0.0.0.0"
+subscribe="http://127.0.0.1"
 nodes=''
 
 box_user_group="root:net_admin"
@@ -31,14 +31,14 @@ pid_file="${run_path}/${bin_name}.pid"
 tunid_file="${run_path}/tun.id"
 clash_path="${box_path}/clash"
 
-intranet=(0.0.0.0/8 10.0.0.0/8  192.168.1.1/24 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 192.0.0.0/24 192.0.2.0/24 192.88.99.0/24 192.168.0.0/16 198.51.100.0/24 203.0.113.0/24 224.0.0.0/4 240.0.0.0/4 255.255.255.255/32)
+intranet=(0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 192.0.0.0/24 192.0.2.0/24 192.88.99.0/24 192.168.0.0/16 198.51.100.0/24 203.0.113.0/24 224.0.0.0/4 240.0.0.0/4 255.255.255.255/32)
 intranet6=(::/128 ::1/128 ::ffff:0:0/96 100::/64 64:ff9b::/96 2001::/32 2001:10::/28 2001:20::/28 2001:db8::/32 2002::/16 fe80::/10 ff00::/8)
 
-ipv6="enable"
+ipv6="disable"
 
 phy_if="wlan0" # APP模式需设置出口网卡名称
-proxy_method="TUN"
-# REDIRECT: TCP only / TPROXY: TCP + UDP / MIXED: REDIRECT TCP + TUN UDP / APP: TUN / TUN: TCP + UDP
+proxy_method="TPROXY"
+# REDIRECT: TCP only / TPROXY: TCP + UDP / MIXED: REDIRECT TCP + TUN UDP / APP: TUN
 
 proxy_mode="blacklist"
 # blacklist / whitelist / core
@@ -63,7 +63,7 @@ log() {
     Warn)
       [ -t 1 ] && echo -e "\033[1;33m${now} [Warn]: $2\033[0m" || echo "${now} [Warn]: $2"
       ;;
-    Error)
+    Error) 
       [ -t 1 ] && echo -e "\033[1;31m${now} [Error]: $2\033[0m" || echo "${now} [Error]: $2"
       ;;
     *)
@@ -71,7 +71,6 @@ log() {
       ;;
   esac
 }
-
 # 等待用户解锁屏幕
 wait_until_login(){
   local test_file="/sdcard/Android/.BOX5TEST"
@@ -131,6 +130,7 @@ check_permission() {
     return 1
   fi
 }
+
 # 启动核心程序
 start_bin() {
   ulimit -SHn 1000000
@@ -140,7 +140,6 @@ start_bin() {
         log Info "正在启动 ${bin_name} 服务。"
         nohup busybox setuidgid ${box_user_group} ${bin_path} run -D ${box_path}/${bin_name} > /dev/null 2> ${run_path}/error_${bin_name}.log &
         echo -n $! > ${pid_file}
-        (while IFS= read -r line; do echo "$line" >> ${run_path}/error_${bin_name}.log; tail -c 5M ${run_path}/error_${bin_name}.log > ${run_path}/error_${bin_name}.log.tmp && mv ${run_path}/error_${bin_name}.log.tmp ${run_path}/error_${bin_name}.log; done) <${run_path}/error_${bin_name}.log &
         return 0
       else
         log Error "配置检查失败，请检查 ${run_path}/check.log 文件。"
@@ -156,9 +155,8 @@ start_bin() {
       fi
       if ${bin_path} -t -d ${box_path}/${bin_name} > ${run_path}/check.log 2>&1 ; then
         log Info "正在启动 ${bin_name} 服务。"
-        nohup busybox setuidgid ${box_user_group} ${bin_path} -d ${box_path}/${bin_name} -f ${box_path}/${bin_name}/config.yaml > ${box_path}/${bin_name}/${bin_name}_$(date +%Y%m%d%H%M).log 2> ${run_path}/error_${bin_name}.log &
+        nohup busybox setuidgid ${box_user_group} ${bin_path} -d ${box_path}/${bin_name} > ${box_path}/${bin_name}/${bin_name}_$(date +%Y%m%d%H%M).log 2> ${run_path}/error_${bin_name}.log &
         echo -n $! > ${pid_file}
-        (while IFS= read -r line; do echo "$line" >> ${run_path}/error_${bin_name}.log; tail -c 5M ${run_path}/error_${bin_name}.log > ${run_path}/error_${bin_name}.log.tmp && mv ${run_path}/error_${bin_name}.log.tmp ${run_path}/error_${bin_name}.log; done) <${run_path}/error_${bin_name}.log &
         return 0
       else
         log Error "配置检查失败，请检查 ${run_path}/check.log 文件。"
@@ -170,7 +168,6 @@ start_bin() {
         log Info "正在启动 ${bin_name} 服务。"
         nohup busybox setuidgid ${box_user_group} ${bin_path} -confdir ${box_path}/${bin_name} > /dev/null 2> ${run_path}/error_${bin_name}.log &
         echo -n $! > ${pid_file}
-        (while IFS= read -r line; do echo "$line" >> ${run_path}/error_${bin_name}.log; tail -c 5M ${run_path}/error_${bin_name}.log > ${run_path}/error_${bin_name}.log.tmp && mv ${run_path}/error_${bin_name}.log.tmp ${run_path}/error_${bin_name}.log; done) <${run_path}/error_${bin_name}.log &
         return 0
       else
         log Error "配置检查失败，请检查 ${run_path}/check.log 文件。"
@@ -182,7 +179,6 @@ start_bin() {
         log Info "正在启动 ${bin_name} 服务。"
         nohup busybox setuidgid ${box_user_group} ${bin_path} run -d ${box_path}/${bin_name} > /dev/null 2> ${run_path}/error_${bin_name}.log &
         echo -n $! > ${pid_file}
-        (while IFS= read -r line; do echo "$line" >> ${run_path}/error_${bin_name}.log; tail -c 5M ${run_path}/error_${bin_name}.log > ${run_path}/error_${bin_name}.log.tmp && mv ${run_path}/error_${bin_name}.log.tmp ${run_path}/error_${bin_name}.log; done) <${run_path}/error_${bin_name}.log &
         return 0
       else
         log Error "配置检查失败，请检查 ${run_path}/check.log 文件。"
@@ -203,6 +199,7 @@ find_netstat_path() {
   return 1
 }
 
+# 等待核心程序监听
 wait_bin_listen() {
   wait_count=0
   bin_pid=$(busybox pidof ${bin_name})
@@ -235,17 +232,9 @@ display_bin_status() {
   fi
 }
 
-# Disable IPv6 for WebRTC
-prevent_ipv6_webrtc_leak() {
-  log Info "Disabling IPv6 for WebRTC."
-  ip6tables -A OUTPUT -p udp --dport 3478 -j DROP
-  ip6tables -A OUTPUT -p udp --dport 19302:19305 -j DROP
-}
-
 # 启动服务
 start_service() {
   if check_permission ; then
-    disable_ipv6_webrtc
     if [ "${proxy_method}" = "APP" ] ; then
       log Info "通过外部应用运行代理"
       sysctl net.ipv4.ip_forward=1 >/dev/null 2>&1
@@ -256,29 +245,12 @@ start_service() {
       log Info "开始监控 tun 设备状态。"
       nohup "${scripts_dir}"/monitor.service > ${run_path}/monitor.log 2>&1 &
       return 0
-    elif [ "${proxy_method}" = "TUN" ] ; then
-      log Info "使用 TUN 模式代理"
-      start_tun
-      start_bin
-      if wait_bin_listen ; then
-        log Info "${bin_name} 服务正在运行。 ( PID: $(cat ${pid_file}) )"
-        probe_tun_device && forward -I
-        tproxy_control enable >> ${run_path}/run.log 2>> ${run_path}/run_error.log
-        (while true; do sleep 3600; command -v conntrack >/dev/null 2>&1 && clean_conntrack; done) &
-        return 0
-      else
-        if bin_pid=$(pidof ${bin_name}) ; then
-          log Warn "${bin_name} 服务正在运行，但可能未监听。 ( PID: ${bin_pid} )"
-          probe_tun_device && forward -I
-          tproxy_control enable >> ${run_path}/run.log 2>> ${run_path}/run_error.log
-          return 0
-        else
-          log Error "启动 ${bin_name} 服务失败，请检查 ${run_path}/error_${bin_name}.log 文件。"
-          rm -f ${pid_file} >> /dev/null 2>&1
-          return 1
-        fi
-      fi
     fi
+
+    # 新增：在启动服务前清理可能干扰的iptables规则
+    log Info "清理可能干扰的 iptables 规则。"
+    tproxy_control disable >> ${run_path}/run.log 2>> ${run_path}/run_error.log
+
     log Info "${bin_name} 将以 ${box_user_group} 用户组启动。"
     [ "${proxy_method}" != "TPROXY" ] && create_tun_link
     if [ "${bin_name}" = "clash" ] ; then
@@ -287,7 +259,6 @@ start_service() {
       export GOMAXPROCS
       nohup busybox setuidgid ${box_user_group} ${bin_path} -d ${box_path}/${bin_name} -f ${box_path}/${bin_name}/config.yaml > ${box_path}/${bin_name}/${bin_name}_$(date +%Y%m%d%H%M).log 2> ${run_path}/error_${bin_name}.log &
       echo -n $! > ${pid_file}
-      (while IFS= read -r line; do echo "$line" >> ${run_path}/error_${bin_name}.log; tail -c 5M ${run_path}/error_${bin_name}.log > ${run_path}/error_${bin_name}.log.tmp && mv ${run_path}/error_${bin_name}.log.tmp ${run_path}/error_${bin_name}.log; done) <${run_path}/error_${bin_name}.log &
     else
       # 其他核心的启动方式保持不变
       start_bin
@@ -299,7 +270,7 @@ start_service() {
       tproxy_control enable >> ${run_path}/run.log 2>> ${run_path}/run_error.log
       
       # 新增: 定期清理连接跟踪表
-      (while true; do sleep 3600; command -v conntrack >/dev/null 2>&1 && clean_conntrack; done) &
+      (while true; do sleep 3600; clean_conntrack; done) &
       
       return 0
     else
@@ -321,6 +292,7 @@ start_service() {
   fi
 }
 
+# 停止服务
 stop_service() {
   if [ "${proxy_method}" = "APP" ] ; then
     pkill -f "${scripts_dir}/monitor.service" -9
@@ -344,91 +316,48 @@ stop_service() {
   fi
   rm -f ${pid_file} >> /dev/null 2>&1
 
-  # 新增：停止服务后清理iptables规则
+  # 新增：停���服务后清理iptables规则
   tproxy_control disable >> ${run_path}/run.log 2>> ${run_path}/run_error.log
-
-  # 停止 TUN 模式
-  if [ "${proxy_method}" = "TUN" ] ; then
-    stop_tun
-  fi
 }
 
-start_tun() {
-  # 创建 TUN 设备
-  create_tun_link
+# monitor.service 功能
+monitor_service() {
+  wait_for_tun_device() {
+    until grep -q -E "tun[0-9]" /data/misc/net/rt_tables; do
+      sleep 2
+    done
+  }
 
-  # 配置 TUN 设备
-  ip tuntap add dev ${tun_device} mode tun
-  ip addr add 10.0.0.1/24 dev ${tun_device}
-  ip link set dev ${tun_device} up
+  get_tun_id() {
+    grep -E "tun[0-9]" /data/misc/net/rt_tables | awk '{print $1}' > "$tunid_file"
+    cat "$tunid_file"
+  }
 
-  # 配置路由规则
-  ip rule add fwmark ${id} table ${id}
-  ip route add local default dev lo table ${id}
-  ip route add default dev ${tun_device} table ${id}
+  ip_rule() {
+    ip rule "$1" from all iif "$phy_if" table "$2" pref 17998
+  }
 
-  # 创建并清空 BOX_TUN 链
-  ${iptables} -t mangle -N BOX_TUN
-  ${iptables} -t mangle -F BOX_TUN
+  check_tun_device() {
+    if ! ip rule | grep -q "from all iif $phy_if lookup $1"; then
+      log Warn "tun 设备已丢失，正在等待恢复。"
+      return 1
+    fi
+  }
 
-  # 添加 TUN 相关规则
-  ${iptables} -t mangle -A BOX_TUN -p tcp -j MARK --set-mark ${id}
-  ${iptables} -t mangle -A BOX_TUN -p udp -j MARK --set-mark ${id}
-
-  # 添加 fake_ip 相关规则
-  ${iptables} -t nat -N CLASH_FAKEIP
-  ${iptables} -t nat -F CLASH_FAKEIP
-  ${iptables} -t nat -A CLASH_FAKEIP -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
-  ${iptables} -t nat -I PREROUTING -j CLASH_FAKEIP
-  ${iptables} -t nat -I OUTPUT -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
-
-  # 添加 DNS 代理规则
-  ${iptables} -t nat -N CLASH_DNS
-  ${iptables} -t nat -F CLASH_DNS
-  ${iptables} -t nat -A CLASH_DNS -p udp --dport 53 -j REDIRECT --to-ports ${tun_port}
-  ${iptables} -t nat -I PREROUTING -j CLASH_DNS
-  ${iptables} -t nat -I OUTPUT -j CLASH_DNS
-
-  # 添加 TUN 链到 PREROUTING 和 OUTPUT 链
-  ${iptables} -t mangle -I PREROUTING -j BOX_TUN
-  ${iptables} -t mangle -I OUTPUT -j BOX_TUN
-
-  # 确保流量通过 TUN 设备
-  ${iptables} -t nat -A POSTROUTING -o ${tun_device} -j MASQUERADE
-  ${iptables} -A FORWARD -i ${tun_device} -j ACCEPT
-  ${iptables} -A FORWARD -o ${tun_device} -j ACCEPT
+  wait_for_tun_device
+  tunid=$(get_tun_id)
+  ip_rule add $tunid >> /dev/null 2>&1
+  while true; do
+    if ! check_tun_device "$tunid"; then
+      ip_rule del $tunid >> /dev/null 2>&1
+      wait_for_tun_device
+      tunid=$(get_tun_id)
+      log Info "已重新获取 tun 设备，新 ID: $tunid"
+      ip_rule add $tunid >> /dev/null 2>&1
+    fi
+    sleep 3
+  done
 }
-
-stop_tun() {
-  # 删除路由规则
-  ip rule del fwmark ${id} table ${id}
-  ip route flush table ${id}
-
-  # 删除 TUN 设备
-  ip link set dev ${tun_device} down
-  ip tuntap del dev ${tun_device} mode tun
-
-  # 删除 PREROUTING 和 OUTPUT 链中的规则
-  ${iptables} -t mangle -D PREROUTING -j BOX_TUN
-  ${iptables} -t mangle -D OUTPUT -j BOX_TUN
-
-  # 清空并删除 BOX_TUN 链
-  ${iptables} -t mangle -F BOX_TUN
-  ${iptables} -t mangle -X BOX_TUN
-
-  # 删除 fake_ip 相关规则
-  ${iptables} -t nat -D PREROUTING -j CLASH_FAKEIP
-  ${iptables} -t nat -D OUTPUT -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
-  ${iptables} -t nat -F CLASH_FAKEIP
-  ${iptables} -t nat -X CLASH_FAKEIP
-
-  # 删除 DNS 代理规则
-  ${iptables} -t nat -D PREROUTING -j CLASH_DNS
-  ${iptables} -t nat -D OUTPUT -j CLASH_DNS
-  ${iptables} -t nat -F CLASH_DNS
-  ${iptables} -t nat -X CLASH_DNS
-}
-
 
 # box.tproxy 功能
 tproxy_control() {
@@ -458,7 +387,6 @@ tproxy_control() {
             iptables="ip6tables -w 100"
             intranet6[${#intranet6[@]}]=$(ip address | grep -w inet6 | grep -v ::1 | grep -v fe80 | awk '{print $2}')
             start_tproxy && log Info "创建 ip6tables 透明代理规则完成。" || (log Error "创建 ip6tables 透明代理规则失败。" && stop_tproxy >> /dev/null 2>&1)
-            prevent_ipv6_webrtc_leak  # 新增调用防泄漏函数
           else
             disable_ipv6
             log Warn "禁用 IPv6。"
@@ -473,30 +401,12 @@ tproxy_control() {
           start_redirect && log Info "创建 iptables 透明代理规则完成。" || (log Error "创建 iptables 透明代理规则失败。" && stop_redirect >> /dev/null 2>&1)
           [ "${ipv6}" = "enable" ] && enable_ipv6 && log Info "启用 IPv6。" || (disable_ipv6 && log Warn "禁用 IPv6。")
         fi
-      elif [ "${proxy_method}" = "TUN" ] ; then
-        log Info "使用 TUN: TCP+UDP。"
-        log Info "创建 iptables 透明代理规则。"
-        iptables="iptables -w 100"
-        start_tproxy && log Info "创建 iptables 透明代理规则完成。" || (log Error "创建 iptables 透明代理规则失败。" && stop_tproxy >> /dev/null 2>&1)
-        if [ "${ipv6}" = "enable" ] ; then
-          log Info "使用 IPv6。"
-          enable_ipv6
-          iptables="ip6tables -w 100"
-          intranet6[${#intranet6[@]}]=$(ip address | grep -w inet6 | grep -v ::1 | grep -v fe80 | awk '{print $2}')
-          start_tproxy && log Info "创建 ip6tables 透明代理规则完成。" || (log Error "创建 ip6tables 透明代理规则失败。" && stop_tproxy >> /dev/null 2>&1)
-          prevent_ipv6_webrtc_leak  # 新增调用防泄漏函数
-        else
-          disable_ipv6
-          log Warn "禁用 IPv6。"
-        fi
-        # 优化网络设置
-        optimize_network
       else
         [ "${proxy_method}" = "REDIRECT" ] && log Info "使用 REDIRECT: TCP。" || log Info "使用 MIXED: TCP+TUN。"
         log Info "创建 iptables 透明代理规则。"
         iptables="iptables -w 100"
         start_redirect && log Info "创建 iptables 透明代理规则完成。" || (log Error "创建 iptables 透明代理规则失败。" && stop_redirect >> /dev/null 2>&1)
-        [ "${ipv6}" = "enable" ] && enable_ipv6 && prevent_ipv6_webrtc_leak && log Info "启用 IPv6 并防止泄漏。" || (disable_ipv6 && log Warn "禁用 IPv6。")
+        [ "${ipv6}" = "enable" ] && enable_ipv6 && log Info "启用 IPv6。" || (disable_ipv6 && log Warn "禁用 IPv6。")
       fi
       ;;
     disable)
@@ -567,8 +477,8 @@ start_redirect() {
   if [ "${bin_name}" = "clash" ] ; then
     ${iptables} -t nat -A BOX_EXTERNAL -p udp --dport 53 -j REDIRECT --to-ports ${clash_dns_port}
     ${iptables} -t nat -A BOX_LOCAL -p udp --dport 53 -j REDIRECT --to-ports ${clash_dns_port}
-    ${iptables} -t nat -A BOX_EXTERNAL -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
-    ${iptables} -t nat -A BOX_LOCAL -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
+    ${iptables} -t nat -A BOX_EXTERNAL -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
+    ${iptables} -t nat -A BOX_LOCAL -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
   #  else
   #    其他类型的入站应在此处添加以接收 DNS 流量而不是嗅探
   #    ${iptables} -t nat -A BOX_EXTERNAL -p udp --dport 53 -j REDIRECT --to-ports ${redir_port}
@@ -610,7 +520,7 @@ start_redirect() {
       for appid in ${uid_list[@]} ; do
         ${iptables} -t nat -I BOX_LOCAL -m owner --uid-owner ${appid} -j RETURN
       done
-      # 允许所有指定应用
+      # 允许��指定应用
       ${iptables} -t nat -A BOX_LOCAL -p tcp -j REDIRECT --to-ports ${redir_port}
       log Info "代理模式: ${proxy_mode}, ${user_packages_list[*]} 不透明代理。"
     fi
@@ -631,7 +541,7 @@ start_redirect() {
 
   ${iptables} -t nat -I OUTPUT -j BOX_LOCAL
 
-  ${iptables} -A OUTPUT -d 0.0.0.0 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${redir_port} -j REJECT
+  ${iptables} -A OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${redir_port} -j REJECT
 }
 
 stop_redirect() {
@@ -639,16 +549,19 @@ stop_redirect() {
 
   ${iptables} -t nat -D OUTPUT -j BOX_LOCAL
 
-  ${iptables} -D OUTPUT -d 0.0.0.0 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${redir_port} -j REJECT
-  ${iptables} -D OUTPUT -d 0.0.0.0 -p tcp -m owner --uid-owner 0 --gid-owner 3005 -m tcp --dport ${redir_port} -j REJECT
+  ${iptables} -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${redir_port} -j REJECT
+  ${iptables} -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner 0 --gid-owner 3005 -m tcp --dport ${redir_port} -j REJECT
 
   ${iptables} -t nat -F BOX_EXTERNAL
   ${iptables} -t nat -X BOX_EXTERNAL
   ${iptables} -t nat -F BOX_LOCAL
   ${iptables} -t nat -X BOX_LOCAL
 }
+
 start_tproxy() {
-  # 添加 IPv6 和 IPv4 的路由规则
+  # 省略了具体实现，需要将 box.tproxy 中的 start_tproxy 函数代码完整粘贴到这里
+  # 以下是 start_tproxy 函数的完整代码：
+
   if [ "${iptables}" = "ip6tables -w 100" ] ; then
     ip -6 rule add fwmark ${id} table ${id} pref ${id}
     ip -6 route add local default dev lo table ${id}
@@ -659,11 +572,9 @@ start_tproxy() {
     ip route add default dev ${tun_device} table ${id}
   fi
 
-  # 创建并清空 BOX_EXTERNAL 链
   ${iptables} -t mangle -N BOX_EXTERNAL
   ${iptables} -t mangle -F BOX_EXTERNAL
 
-  # 根据 bin_name 和 iptables 类型添加规则
   if [ "${bin_name}" = "clash" ] ; then
     if [ "${iptables}" = "ip6tables -w 100" ] ; then
       ${iptables} -t mangle -A BOX_EXTERNAL -p udp --dport 53 -j RETURN
@@ -690,13 +601,11 @@ start_tproxy() {
     fi
   fi
 
-  # 添加 TPROXY 和 MARK 规则
   ${iptables} -t mangle -A BOX_EXTERNAL -p tcp -i lo -j TPROXY --on-port ${tproxy_port} --tproxy-mark ${id}
   ${iptables} -t mangle -A BOX_EXTERNAL -p udp -i lo -j TPROXY --on-port ${tproxy_port} --tproxy-mark ${id}
   ${iptables} -t mangle -A BOX_EXTERNAL -p tcp -i lo -j MARK --set-mark ${id}
   ${iptables} -t mangle -A BOX_EXTERNAL -p udp -i lo -j MARK --set-mark ${id}
 
-  # 处理 ap_list
   if [ "${ap_list}" != "" ] ; then
     for ap in ${ap_list[@]} ; do
       ${iptables} -t mangle -A BOX_EXTERNAL -p tcp -i ${ap} -j TPROXY --on-port ${tproxy_port} --tproxy-mark ${id}
@@ -709,11 +618,9 @@ start_tproxy() {
 
   ${iptables} -t mangle -I PREROUTING -j BOX_EXTERNAL
 
-  # 创建并清空 BOX_LOCAL 链
   ${iptables} -t mangle -N BOX_LOCAL
   ${iptables} -t mangle -F BOX_LOCAL
 
-  # 处理 ignore_out_list
   if [ "${ignore_out_list}" != "" ] ; then
     for ignore in ${ignore_out_list[@]} ; do
       ${iptables} -t mangle -I BOX_LOCAL -o ${ignore} -j RETURN
@@ -721,7 +628,6 @@ start_tproxy() {
     log Info "${ignore_out_list[*]} 忽略透明代理。"
   fi
 
-  # 根据 bin_name 和 iptables 类型添加规则
   if [ "${bin_name}" = "clash" ] ; then
     if [ "${iptables}" = "ip6tables -w 100" ] ; then
       ${iptables} -t mangle -A BOX_LOCAL -p udp --dport 53 -j RETURN
@@ -750,7 +656,6 @@ start_tproxy() {
 
   ${iptables} -t mangle -I BOX_LOCAL -m owner --uid-owner ${box_user} --gid-owner ${box_group} -j RETURN
 
-  # 处理代理模式
   if [ "${proxy_mode}" = "blacklist" ] ; then
     if [ "${uid_list}" = "" ] ; then
       ${iptables} -t mangle -A BOX_LOCAL -p tcp -j MARK --set-mark ${id}
@@ -784,7 +689,6 @@ start_tproxy() {
 
   ${iptables} -t mangle -I OUTPUT -j BOX_LOCAL
 
-  # 创建并清空 DIVERT 链
   ${iptables} -t mangle -N DIVERT
   ${iptables} -t mangle -F DIVERT
 
@@ -793,14 +697,12 @@ start_tproxy() {
 
   ${iptables} -t mangle -I PREROUTING -p tcp -m socket -j DIVERT
 
-  # 添加 REJECT 规则
   if [ "${iptables}" = "ip6tables -w 100" ] ; then
     ${iptables} -A OUTPUT -d ::1 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${tproxy_port} -j REJECT
   else
-    ${iptables} -A OUTPUT -d 0.0.0.0 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${tproxy_port} -j REJECT
+    ${iptables} -A OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${tproxy_port} -j REJECT
   fi
 
-  # clash 特定规则
   if [ "${bin_name}" = "clash" ] && [ "${iptables}" = "iptables -w 100" ] ; then
     ${iptables} -t nat -N CLASH_DNS_EXTERNAL
     ${iptables} -t nat -F CLASH_DNS_EXTERNAL
@@ -818,13 +720,12 @@ start_tproxy() {
 
     ${iptables} -t nat -I OUTPUT -j CLASH_DNS_LOCAL
 
-    ${iptables} -t nat -I OUTPUT -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
-    ${iptables} -t nat -I PREROUTING -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
+    ${iptables} -t nat -I OUTPUT -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
+    ${iptables} -t nat -I PREROUTING -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
   fi
 }
 
 stop_tproxy() {
-  # 删除 IPv6 和 IPv4 的路由规则
   if [ "${iptables}" = "ip6tables -w 100" ] ; then
     ip -6 rule del fwmark ${id} table ${id}
     ip -6 route flush table ${id}
@@ -833,38 +734,43 @@ stop_tproxy() {
     ip route flush table ${id}
   fi
 
-  # 删除 PREROUTING 和 OUTPUT 链中的规则
   ${iptables} -t mangle -D PREROUTING -j BOX_EXTERNAL
+
   ${iptables} -t mangle -D PREROUTING -p tcp -m socket -j DIVERT
+
   ${iptables} -t mangle -D OUTPUT -j BOX_LOCAL
 
-  # 清空并删除 BOX_EXTERNAL, BOX_LOCAL 和 DIVERT 链
   ${iptables} -t mangle -F BOX_EXTERNAL
   ${iptables} -t mangle -X BOX_EXTERNAL
+
   ${iptables} -t mangle -F BOX_LOCAL
   ${iptables} -t mangle -X BOX_LOCAL
+
   ${iptables} -t mangle -F DIVERT
   ${iptables} -t mangle -X DIVERT
 
-  # 删除 REJECT 规则
   if [ "${iptables}" = "ip6tables -w 100" ] ; then
     ${iptables} -D OUTPUT -d ::1 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${tproxy_port} -j REJECT
     ${iptables} -D OUTPUT -d ::1 -p tcp -m owner --uid-owner 0 --gid-owner 3005 -m tcp --dport ${tproxy_port} -j REJECT
   else
-    ${iptables} -D OUTPUT -d 0.0.0.0 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${tproxy_port} -j REJECT
-    ${iptables} -D OUTPUT -d 0.0.0.0 -p tcp -m owner --uid-owner 0 --gid-owner 3005 -m tcp --dport ${tproxy_port} -j REJECT
+    ${iptables} -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${tproxy_port} -j REJECT
+    ${iptables} -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner 0 --gid-owner 3005 -m tcp --dport ${tproxy_port} -j REJECT
   fi
 
   # Android ip6tables 没有 nat 表
   iptables="iptables -w 100"
   ${iptables} -t nat -D PREROUTING -j CLASH_DNS_EXTERNAL
+
   ${iptables} -t nat -D OUTPUT -j CLASH_DNS_LOCAL
+
   ${iptables} -t nat -F CLASH_DNS_EXTERNAL
   ${iptables} -t nat -X CLASH_DNS_EXTERNAL
+
   ${iptables} -t nat -F CLASH_DNS_LOCAL
   ${iptables} -t nat -X CLASH_DNS_LOCAL
-  ${iptables} -t nat -D OUTPUT -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
-  ${iptables} -t nat -D PREROUTING -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
+
+  ${iptables} -t nat -D OUTPUT -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
+  ${iptables} -t nat -D PREROUTING -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
 }
 
 enable_ipv6() {
@@ -873,11 +779,6 @@ enable_ipv6() {
   echo 0 > /proc/sys/net/ipv6/conf/all/disable_ipv6
   echo 0 > /proc/sys/net/ipv6/conf/default/disable_ipv6
   echo 0 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6
-
-  # Prevent local IPv6 leaks
-  ip6tables -A OUTPUT -d fe80::/10 -j DROP
-  ip6tables -A OUTPUT -d ::1/128 -j DROP
-  ip6tables -A OUTPUT -d ff00::/8 -j DROP
 }
 
 disable_ipv6() {
@@ -886,11 +787,6 @@ disable_ipv6() {
   echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
   echo 1 > /proc/sys/net/ipv6/conf/default/disable_ipv6
   echo 1 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6
-
-  # Clean up IPv6 rules
-  ip6tables -D OUTPUT -d fe80::/10 -j DROP
-  ip6tables -D OUTPUT -d ::1/128 -j DROP
-  ip6tables -D OUTPUT -d ff00::/8 -j DROP
 }
 
 # 新增: 定期清理连接跟踪表函数
@@ -908,10 +804,6 @@ optimize_network() {
 
   # 优化 TCP 参数
   sysctl -w net.ipv4.tcp_fastopen=3
-  echo 3 > /proc/sys/net/ipv4/tcp_fastopen
-  # 启用 TCP  拥塞控制算法
-  sysctl -w net.core.default_qdisc=fq
-  
   sysctl -w net.ipv4.tcp_slow_start_after_idle=0
   sysctl -w net.ipv4.tcp_no_metrics_save=1
   sysctl -w net.ipv4.tcp_fin_timeout=15
@@ -932,7 +824,6 @@ optimize_network() {
   sysctl -w net.core.netdev_max_backlog=8192
 
   # 优化 IPv4 参数
-  sysctl -w net.ipv4.tcp_window_scaling=1
   sysctl -w net.ipv4.tcp_rmem='4096 87380 67108864'
   sysctl -w net.ipv4.tcp_wmem='4096 65536 67108864'
   sysctl -w net.ipv4.udp_rmem_min=8192
@@ -942,39 +833,14 @@ optimize_network() {
   # Clash 特定优化
   sysctl -w net.ipv4.ip_forward=1
   sysctl -w net.ipv4.tcp_max_syn_backlog=8192
-  sysctl -w net.ipv4.tcp_fin_timeout=30
   sysctl -w net.ipv4.tcp_synack_retries=2
   sysctl -w net.ipv4.tcp_syn_retries=2
-  sysctl -w net.ipv4.tcp_keepalive_time=1200
-  
-  iptables -A FORWARD -i ${phy_if} -o ${tun_device} -j ACCEPT
-  iptables -A FORWARD -i ${tun_device} -o ${phy_if} -j ACCEPT
-  iptables -t nat -A POSTROUTING -o ${phy_if} -j MASQUERADE
-  # Set iptables rules for LAN sharing
-  iptables -I FORWARD -o ${tun_device} -j ACCEPT
-  iptables -I FORWARD -i ${tun_device} -j ACCEPT
-  iptables -t nat -A POSTROUTING -o ${tun_device} -j MASQUERADE
-  # Set ip rule for TPROXY
-  ip rule add fwmark 0x1 table 100
-  ip -6 rule add fwmark 0x1 table 100
-
-  # IPv6 rules if enabled
-  if [ "${ipv6}" = "enable" ]; then
-    ip6tables -I FORWARD -o ${tun_device} -j ACCEPT
-    ip6tables -I FORWARD -i ${tun_device} -j ACCEPT
-    ip6tables -t nat -A POSTROUTING -o ${tun_device} -j MASQUERADE
-    ip -6 rule add fwmark 0x1 lookup 100
-    ip -6 route add local ::/0 dev lo table 100
-  fi
 
   # 优化网络接口队列长度
   for i in $(ls /sys/class/net); do
     [ -e /sys/class/net/$i/tx_queue_len ] && echo 10000 > /sys/class/net/$i/tx_queue_len
   done
-  # 清理连接跟踪表
-  clean_conntrack() {
-    conntrack -F
-  }
+
   log Info "网络优化设置完成。"
 }
 
@@ -1012,3 +878,9 @@ case "$1" in
     log Error "$0 $1 用法: $0 {start|stop|restart|status}"
     ;;
 esac
+
+# 应用网络优化设置
+optimize_network
+
+# 在主程序中添加定期清理
+(while true; do sleep 3600; clean_conntrack; done) &
