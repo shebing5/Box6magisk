@@ -316,7 +316,7 @@ stop_service() {
   fi
   rm -f ${pid_file} >> /dev/null 2>&1
 
-  # 新增：停���服务后清理iptables规则
+  # 新增：停止服务后清理iptables规则
   tproxy_control disable >> ${run_path}/run.log 2>> ${run_path}/run_error.log
 }
 
@@ -520,7 +520,7 @@ start_redirect() {
       for appid in ${uid_list[@]} ; do
         ${iptables} -t nat -I BOX_LOCAL -m owner --uid-owner ${appid} -j RETURN
       done
-      # 允许��指定应用
+      # 允许指定应用
       ${iptables} -t nat -A BOX_LOCAL -p tcp -j REDIRECT --to-ports ${redir_port}
       log Info "代理模式: ${proxy_mode}, ${user_packages_list[*]} 不透明代理。"
     fi
@@ -844,6 +844,21 @@ optimize_network() {
   log Info "网络优化设置完成。"
 }
 
+# 新增：根据内核版本应用特定设置
+apply_kernel_specific_settings() {
+  kernel_version=$(uname -r)
+  if [[ "$kernel_version" == 4.* ]]; then
+    log Info "应用内核版本 4.x 特定设置。"
+    # 在此处添加内核版本 4.x 的特定设置
+  elif [[ "$kernel_version" == 5.* ]]; then
+    log Info "应用内核版本 5.x 特定设置。"
+    # 在此处添加内核版本 5.x 的特定设置
+  else
+    log Warn "未识别的内核版本，应用通用设置。"
+    # 在此处添加通用设置
+  fi
+}
+
 # 等待用户登录
 wait_until_login
 
@@ -881,6 +896,9 @@ esac
 
 # 应用网络优化设置
 optimize_network
+
+# 应用内核特定设置
+apply_kernel_specific_settings
 
 # 在主程序中添加定期清理
 (while true; do sleep 3600; clean_conntrack; done) &
