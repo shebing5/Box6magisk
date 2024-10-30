@@ -63,7 +63,7 @@ log() {
     Warn)
       [ -t 1 ] && echo -e "\033[1;33m${now} [Warn]: $2\033[0m" || echo "${now} [Warn]: $2"
       ;;
-    Error)
+    Error) 
       [ -t 1 ] && echo -e "\033[1;31m${now} [Error]: $2\033[0m" || echo "${now} [Error]: $2"
       ;;
     *)
@@ -71,7 +71,6 @@ log() {
       ;;
   esac
 }
-
 # 等待用户解锁屏幕
 wait_until_login(){
   local test_file="/sdcard/Android/.BOX5TEST"
@@ -238,7 +237,7 @@ start_service() {
   if check_permission ; then
     if [ "${proxy_method}" = "APP" ] ; then
       log Info "通过外部应用运行代理"
-      sysctl net.ipv4.ip_forward=1 >/dev/null 2>&1
+      sudo sysctl net.ipv4.ip_forward=1 >/dev/null 2>&1
       iptables  -I FORWARD -o tun+ -j ACCEPT
       iptables  -I FORWARD -i tun+ -j ACCEPT
       iptables  -t nat -A POSTROUTING -o tun+ -j MASQUERADE
@@ -298,7 +297,7 @@ stop_service() {
   if [ "${proxy_method}" = "APP" ] ; then
     pkill -f "${scripts_dir}/monitor.service" -9
     log Info "关闭通过外部应用运行的代理"
-    sysctl net.ipv4.ip_forward=0 >/dev/null 2>&1
+    sudo sysctl net.ipv4.ip_forward=0 >/dev/null 2>&1
     iptables  -D FORWARD -o tun+ -j ACCEPT
     iptables  -D FORWARD -i tun+ -j ACCEPT
     iptables  -t nat -D POSTROUTING -o tun+ -j MASQUERADE
@@ -317,7 +316,7 @@ stop_service() {
   fi
   rm -f ${pid_file} >> /dev/null 2>&1
 
-  # 新增：停���服务后清理iptables规则
+  # 新增：停止服务后清理iptables规则
   tproxy_control disable >> ${run_path}/run.log 2>> ${run_path}/run_error.log
 }
 
@@ -521,7 +520,7 @@ start_redirect() {
       for appid in ${uid_list[@]} ; do
         ${iptables} -t nat -I BOX_LOCAL -m owner --uid-owner ${appid} -j RETURN
       done
-      # 允许��指定应用
+      # 允许指定应用
       ${iptables} -t nat -A BOX_LOCAL -p tcp -j REDIRECT --to-ports ${redir_port}
       log Info "代理模式: ${proxy_mode}, ${user_packages_list[*]} 不透明代理。"
     fi
@@ -558,11 +557,7 @@ stop_redirect() {
   ${iptables} -t nat -F BOX_LOCAL
   ${iptables} -t nat -X BOX_LOCAL
 }
-
 start_tproxy() {
-  # 省略了具体实现，需要将 box.tproxy 中的 start_tproxy 函数代码完整粘贴到这里
-  # 以下是 start_tproxy 函数的完整代码：
-
   if [ "${iptables}" = "ip6tables -w 100" ] ; then
     ip -6 rule add fwmark ${id} table ${id} pref ${id}
     ip -6 route add local default dev lo table ${id}
@@ -723,7 +718,44 @@ start_tproxy() {
 
     ${iptables} -t nat -I OUTPUT -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
     ${iptables} -t nat -I PREROUTING -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
+
+    # 新增 ICMP DNAT 规则
+    ${iptables} -t nat -I OUTPUT -p icmp -j DNAT --to-destination 127.0.0.1
+    ${iptables} -t nat -I PREROUTING -p icmp -j DNAT --to-destination 127.0.0.1
+
+    # 为局域网设备添加 ICMP DNAT 规则
+    for interface in ${ap_list[@]}; do
+      ${iptables} -t nat -I PREROUTING -i ${interface} -p icmp -j DNAT --to-destination 127.0.0.1
+    done
+
+    # 添加日志
+    log Info "为本设备和局域网设备配置了 ICMP DNAT 规则。"
   fi
+
+  # 确保 IPv6 ICMP 也被正确处理（如果启用了 IPv6）
+  if [ "${iptables}" = "ip6tables -w 100" ] ; then
+    ip6tables -t nat -I OUTPUT -p ipv6-icmp -j DNAT --to-destination ::1
+    ip6tables -t nat -I PREROUTING -p ipv6-icmp -j DNAT --to-destination ::1
+
+    for interface in ${ap_list[@]}; do
+      ip6tables -t nat -I PREROUTING -i ${interface} -p ipv6-icmp -j DNAT --to-destination ::1
+    done
+
+    log Info "为本设备和局域网设备配置了 IPv6 ICMP DNAT 规则。"
+  fi
+
+  # 添加防火墙规则以允许 ICMP 流量
+  ${iptables} -A INPUT -p icmp -j ACCEPT
+  ${iptables} -A OUTPUT -p icmp -j ACCEPT
+  ${iptables} -A FORWARD -p icmp -j ACCEPT
+
+  if [ "${iptables}" = "ip6tables -w 100" ] ; then
+    ip6tables -A INPUT -p ipv6-icmp -j ACCEPT
+    ip6tables -A OUTPUT -p ipv6-icmp -j ACCEPT
+    ip6tables -A FORWARD -p ipv6-icmp -j ACCEPT
+  fi
+
+  log Info "添加了允许 ICMP 流量的防火墙规则。"
 }
 
 stop_tproxy() {
@@ -804,38 +836,38 @@ optimize_network() {
   ulimit -n 1000000
 
   # 优化 TCP 参数
-  sysctl -w net.ipv4.tcp_fastopen=3
-  sysctl -w net.ipv4.tcp_slow_start_after_idle=0
-  sysctl -w net.ipv4.tcp_no_metrics_save=1
-  sysctl -w net.ipv4.tcp_fin_timeout=15
-  sysctl -w net.ipv4.tcp_max_tw_buckets=5000
-  sysctl -w net.ipv4.tcp_syncookies=1
-  sysctl -w net.ipv4.tcp_rfc1337=1
-  sysctl -w net.ipv4.tcp_keepalive_time=600
-  sysctl -w net.ipv4.tcp_keepalive_probes=5
-  sysctl -w net.ipv4.tcp_keepalive_intvl=15
+  sudo sysctl -w net.ipv4.tcp_fastopen=3
+  sudo sysctl -w net.ipv4.tcp_slow_start_after_idle=0
+  sudo sysctl -w net.ipv4.tcp_no_metrics_save=1
+  sudo sysctl -w net.ipv4.tcp_fin_timeout=15
+  sudo sysctl -w net.ipv4.tcp_max_tw_buckets=5000
+  sudo sysctl -w net.ipv4.tcp_syncookies=1
+  sudo sysctl -w net.ipv4.tcp_rfc1337=1
+  sudo sysctl -w net.ipv4.tcp_keepalive_time=600
+  sudo sysctl -w net.ipv4.tcp_keepalive_probes=5
+  sudo sysctl -w net.ipv4.tcp_keepalive_intvl=15
 
   # 优化内核参数
-  sysctl -w net.core.rmem_max=26214400
-  sysctl -w net.core.wmem_max=26214400
-  sysctl -w net.core.rmem_default=1048576
-  sysctl -w net.core.wmem_default=1048576
-  sysctl -w net.core.optmem_max=65536
-  sysctl -w net.core.somaxconn=8192
-  sysctl -w net.core.netdev_max_backlog=8192
+  sudo sysctl -w net.core.rmem_max=26214400
+  sudo sysctl -w net.core.wmem_max=26214400
+  sudo sysctl -w net.core.rmem_default=1048576
+  sudo sysctl -w net.core.wmem_default=1048576
+  sudo sysctl -w net.core.optmem_max=65536
+  sudo sysctl -w net.core.somaxconn=8192
+  sudo sysctl -w net.core.netdev_max_backlog=8192
 
   # 优化 IPv4 参数
-  sysctl -w net.ipv4.tcp_rmem='4096 87380 67108864'
-  sysctl -w net.ipv4.tcp_wmem='4096 65536 67108864'
-  sysctl -w net.ipv4.udp_rmem_min=8192
-  sysctl -w net.ipv4.udp_wmem_min=8192
-  sysctl -w net.ipv4.tcp_mtu_probing=1
+  sudo sysctl -w net.ipv4.tcp_rmem='4096 87380 67108864'
+  sudo sysctl -w net.ipv4.tcp_wmem='4096 65536 67108864'
+  sudo sysctl -w net.ipv4.udp_rmem_min=8192
+  sudo sysctl -w net.ipv4.udp_wmem_min=8192
+  sudo sysctl -w net.ipv4.tcp_mtu_probing=1
 
   # Clash 特定优化
-  sysctl -w net.ipv4.ip_forward=1
-  sysctl -w net.ipv4.tcp_max_syn_backlog=8192
-  sysctl -w net.ipv4.tcp_synack_retries=2
-  sysctl -w net.ipv4.tcp_syn_retries=2
+  sudo sysctl -w net.ipv4.ip_forward=1
+  sudo sysctl -w net.ipv4.tcp_max_syn_backlog=8192
+  sudo sysctl -w net.ipv4.tcp_synack_retries=2
+  sudo sysctl -w net.ipv4.tcp_syn_retries=2
 
   # 优化网络接口队列长度
   for i in $(ls /sys/class/net); do
@@ -843,6 +875,21 @@ optimize_network() {
   done
 
   log Info "网络优化设置完成。"
+}
+
+# 新增：根据内核版本应用特定设置
+apply_kernel_specific_settings() {
+  kernel_version=$(uname -r)
+  if [[ "$kernel_version" == 4.* ]]; then
+    log Info "应用内核版本 4.x 特定设置。"
+    # 在此处添加内核版本 4.x 的特定设置
+  elif [[ "$kernel_version" == 5.* ]]; then
+    log Info "应用内核版本 5.x 特定设置。"
+    # 在此处添加内核版本 5.x 的特定设置
+  else
+    log Warn "未识别的内核版本，应用通用设置。"
+    # 在此处添加通用设置
+  fi
 }
 
 # 等待用户登录
@@ -882,6 +929,9 @@ esac
 
 # 应用网络优化设置
 optimize_network
+
+# 应用内核特定设置
+apply_kernel_specific_settings
 
 # 在主程序中添加定期清理
 (while true; do sleep 3600; clean_conntrack; done) &
