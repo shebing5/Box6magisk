@@ -401,6 +401,14 @@ tproxy_control() {
           start_redirect && log Info "创建 iptables 透明代理规则完成。" || (log Error "创建 iptables 透明代理规则失败。" && stop_redirect >> /dev/null 2>&1)
           [ "${ipv6}" = "enable" ] && enable_ipv6 && log Info "启用 IPv6。" || (disable_ipv6 && log Warn "禁用 IPv6。")
         fi
+      elif [ "${proxy_method}" = "MIXED" ] ; then
+        log Info "使用 MIXED: REDIRECT TCP + TUN UDP。"
+        log Info "创建 iptables 透明代理规则。"
+        iptables="iptables -w 100"
+        start_redirect && log Info "创建 iptables 透明代理规则完成。" || (log Error "创建 iptables 透明代理规则失败。" && stop_redirect >> /dev/null 2>&1)
+        create_tun_link
+        probe_tun_device && forward -I
+        [ "${ipv6}" = "enable" ] && enable_ipv6 && log Info "启用 IPv6。" || (disable_ipv6 && log Warn "禁用 IPv6。")
       else
         [ "${proxy_method}" = "REDIRECT" ] && log Info "使用 REDIRECT: TCP。" || log Info "使用 MIXED: TCP+TUN。"
         log Info "创建 iptables 透明代理规则。"
