@@ -269,7 +269,7 @@ start_service() {
       # 启动服务后设置iptables规则
       tproxy_control enable >> ${run_path}/run.log 2>> ${run_path}/run_error.log
       
-      # 新增: 定期清理连接跟踪表
+      # 新增: 定期清理��接跟踪表
       (while true; do sleep 3600; clean_conntrack; done) &
       
       return 0
@@ -578,6 +578,12 @@ start_tproxy() {
 
   ${iptables} -t mangle -N BOX_EXTERNAL
   ${iptables} -t mangle -F BOX_EXTERNAL
+
+  # 新增：对 FakeIP 地址范围的流量进行标记和 TPROXY 转发
+  if [ "${bin_name}" = "clash" ]; then
+    ${iptables} -t mangle -A BOX_EXTERNAL -d ${clash_fake_ip_range} -p tcp -j MARK --set-mark ${id}
+    ${iptables} -t mangle -A BOX_EXTERNAL -d ${clash_fake_ip_range} -p tcp -j TPROXY --on-port ${tproxy_port} --tproxy-mark ${id}
+  fi
 
   if [ "${bin_name}" = "clash" ] ; then
     if [ "${iptables}" = "ip6tables -w 100" ] ; then
