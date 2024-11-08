@@ -49,14 +49,15 @@ user_packages_list=()
 ap_list=("wlan+" "eth+" "ap+" "rndis+")
 ignore_out_list=()
 
-module_dir="/data/adb/modules/box5"
-[ -n "$(magisk -v | grep lite)" ] && module_dir=/data/adb/lite_modules/box5
 
 # 添加新的全局变量
 network_interfaces=()
 active_interface=""
 network_mode="" # wifi/mobile/ethernet
 ipset_rules="box_rules"
+
+# 启用 QUIC 支持的标志
+enable_quic=true
 
 # 日志函数
 log() {
@@ -77,35 +78,7 @@ log() {
       ;;
   esac
 }
-# 等待用户解锁屏幕
-wait_until_login(){
-  local test_file="/sdcard/Android/.BOX5TEST"
-  true > "$test_file"
-  while [ ! -f "$test_file" ] ; do
-    true > "$test_file"
-    sleep 1
-  done
-  rm "$test_file"
-}
 
-# 创建 TUN 链接
-create_tun_link() {
-  mkdir -p /dev/net
-  [ ! -L /dev/net/tun ] && ln -s /dev/tun /dev/net/tun
-}
-
-# 检查 TUN 设备
-probe_tun_device() {
-  ifconfig | grep -q ${tun_device} || return 1
-}
-
-# 转发函数
-forward() {
-  iptables -w 100 $1 FORWARD -o ${tun_device} -j ACCEPT
-  iptables -w 100 $1 FORWARD -i ${tun_device} -j ACCEPT
-  ip6tables -w 100 $1 FORWARD -o ${tun_device} -j ACCEPT
-  ip6tables -w 100 $1 FORWARD -i ${tun_device} -j ACCEPT
-}
 
 # 检查权限
 check_permission() {
@@ -159,6 +132,11 @@ start_bin() {
         fi
         sed -i 's#url: ".*"#url: "'"${subscribe}"'"#' ${clash_path}/config.yaml
       fi
+      # 如果启用 QUIC
+      if [ "$enable_quic" = true ]; then
+        export GOMAXPROCS=$(nproc)
+        export CLASH_EXPERIMENT_QUIC=true  # 启用 QUIC 支持的环境变量
+      fi
       if ${bin_path} -t -d ${box_path}/${bin_name} > ${run_path}/check.log 2>&1 ; then
         log Info "正在启动 ${bin_name} 服务。"
         nohup busybox setuidgid ${box_user_group} ${bin_path} -d ${box_path}/${bin_name} > ${box_path}/${bin_name}/${bin_name}_$(date +%Y%m%d%H%M).log 2> ${run_path}/error_${bin_name}.log &
@@ -209,11 +187,17 @@ find_netstat_path() {
 wait_bin_listen() {
   wait_count=0
   bin_pid=$(busybox pidof ${bin_name})
-  find_netstat_path && \
-  check_bin_cmd="netstat -tnulp | grep -q ${bin_name}" || \
-  check_bin_cmd="ls -lh /proc/${bin_pid}/fd | grep -q socket"
+  # 检查 netstat 命令是否可用
+  if command -v netstat >/dev/null 2>&1; then
+    find_netstat_path && \
+    check_bin_cmd="netstat -tnulp | grep -q ${bin_name}" || \
+    check_bin_cmd="ls -lh /proc/${bin_pid}/fd | grep -q socket"
+  else
+    check_bin_cmd="ls -lh /proc/${bin_pid}/fd | grep -q socket"
+  fi
   while [ ${bin_pid} ] && ! eval "${check_bin_cmd}" && [ ${wait_count} -lt 100 ] ; do
     sleep 1 ; wait_count=$((${wait_count} + 1))
+    bin_pid=$(busybox pidof ${bin_name})
   done
   if [ ${bin_pid} ] && eval "${check_bin_cmd}" ; then
     return 0
@@ -248,8 +232,7 @@ start_service() {
       iptables  -I FORWARD -i tun+ -j ACCEPT
       iptables  -t nat -A POSTROUTING -o tun+ -j MASQUERADE
       ip rule add from all table main pref 17999
-      log Info "开始监控 tun 设备状态。"
-      nohup "${scripts_dir}"/monitor.service > ${run_path}/monitor.log 2>&1 &
+      log Info "转发代理已启动。"
       return 0
     fi
 
@@ -259,16 +242,7 @@ start_service() {
 
     log Info "${bin_name} 将以 ${box_user_group} 用户组启动。"
     [ "${proxy_method}" != "TPROXY" ] && create_tun_link
-    if [ "${bin_name}" = "clash" ] ; then
-      # Clash 特定的启动参数
-      GOMAXPROCS=$(nproc)
-      export GOMAXPROCS
-      nohup busybox setuidgid ${box_user_group} ${bin_path} -d ${box_path}/${bin_name} -f ${box_path}/${bin_name}/config.yaml > ${box_path}/${bin_name}/${bin_name}_$(date +%Y%m%d%H%M).log 2> ${run_path}/error_${bin_name}.log &
-      echo -n $! > ${pid_file}
-    else
-      # 其他核心的启动方式保持不变
-      start_bin
-    fi
+    start_bin
     if wait_bin_listen ; then
       log Info "${bin_name} 服务正在运行。 ( PID: $(cat ${pid_file}) )"
       probe_tun_device && forward -I
@@ -278,6 +252,9 @@ start_service() {
       # 新增: 定期清理连接跟踪表
       (while true; do sleep 3600; clean_conntrack; done) &
       
+      # 新增: 监控 TUN 设备
+      [ "${proxy_method}" != "TPROXY" ] && monitor_service &
+      
       return 0
     else
       if bin_pid=$(pidof ${bin_name}) ; then
@@ -285,6 +262,10 @@ start_service() {
         probe_tun_device && forward -I  
         # 启动服务后设置iptables规则
         tproxy_control enable >> ${run_path}/run.log 2>> ${run_path}/run_error.log
+        
+        # 新增: 监控 TUN 设备
+        [ "${proxy_method}" != "TPROXY" ] && monitor_service &
+        
         return 0
       else
         log Error "启动 ${bin_name} 服务失败，请检查 ${run_path}/error_${bin_name}.log 文件。"
@@ -296,49 +277,9 @@ start_service() {
     log Error "缺少 ${bin_name} 核心，请下载并将其放置在 ${box_path}/bin/ 目录中"
     return 2
   fi
-
-  # 添加网络监控
-  (while true; do
-    detect_network_interfaces
-    if [ "$previous_interface" != "$active_interface" ]; then
-      log Info "网络接口发生变化，重新优化网络设置"
-      optimize_network_params
-      setup_qos
-      previous_interface="$active_interface"
-    fi
-    sleep 60
-  done) &
 }
 
-# 停止服务
-stop_service() {
-  if [ "${proxy_method}" = "APP" ] ; then
-    pkill -f "${scripts_dir}/monitor.service" -9
-    log Info "关闭通过外部应用运行的代理"
-    sudo sysctl net.ipv4.ip_forward=0 >/dev/null 2>&1
-    iptables  -D FORWARD -o tun+ -j ACCEPT
-    iptables  -D FORWARD -i tun+ -j ACCEPT
-    iptables  -t nat -D POSTROUTING -o tun+ -j MASQUERADE
-    ip rule del from all table main pref 17999 >/dev/null 2>&1
-    ip rule del from all iif ${phy_if} table $(cat ${tunid_file}) pref 17998 >/dev/null 2>&1
-    rm -f ${tunid_file} >> /dev/null 2>&1
-    log Info "APP 代理服务已停止。"
-    return 0
-  fi
-  if display_bin_status ; then
-    log Warn "正在停止 ${bin_name} 服务。"
-    kill $(cat ${pid_file}) || killall ${bin_name}
-    forward -D >> /dev/null 2>&1
-    sleep 1
-    display_bin_status
-  fi
-  rm -f ${pid_file} >> /dev/null 2>&1
-
-  # 新增：停止服务后清理iptables规则
-  tproxy_control disable >> ${run_path}/run.log 2>> ${run_path}/run_error.log
-}
-
-# monitor.service 功能
+# 监控服务
 monitor_service() {
   wait_for_tun_device() {
     until grep -q -E "tun[0-9]" /data/misc/net/rt_tables; do
@@ -377,6 +318,32 @@ monitor_service() {
   done
 }
 
+# 停止服务
+stop_service() {
+  if [ "${proxy_method}" = "APP" ] ; then
+    log Info "关闭通过外部应用运行的代理"
+    sudo sysctl net.ipv4.ip_forward=0 >/dev/null 2>&1
+    iptables -D FORWARD -o tun+ -j ACCEPT
+    iptables -D FORWARD -i tun+ -j ACCEPT
+    iptables -t nat -D POSTROUTING -o tun+ -j MASQUERADE
+    ip rule del from all table main pref 17999 >/dev/null 2>&1
+    ip rule del from all iif ${phy_if} table $(cat ${tunid_file}) pref 17998 >/dev/null 2>&1
+    rm -f ${tunid_file} >> /dev/null 2>&1
+    log Info "APP 代理服务已停止。"
+    return 0
+  fi
+  if display_bin_status ; then
+    log Warn "正在停止 ${bin_name} 服务。"
+    kill $(cat ${pid_file}) || killall ${bin_name}
+    forward -D >> /dev/null 2>&1
+    sleep 1
+    display_bin_status
+  fi
+  rm -f ${pid_file} >> /dev/null 2>&1
+
+  # 新增：停止服务后清理 iptables 规则
+  tproxy_control disable >> ${run_path}/run.log 2>> ${run_path}/run_error.log
+}
 # box.tproxy 功能
 tproxy_control() {
   id="222"
@@ -503,8 +470,8 @@ start_redirect() {
   if [ "${bin_name}" = "clash" ] ; then
     ${iptables} -t nat -A BOX_EXTERNAL -p udp --dport 53 -j REDIRECT --to-ports ${clash_dns_port}
     ${iptables} -t nat -A BOX_LOCAL -p udp --dport 53 -j REDIRECT --to-ports ${clash_dns_port}
-    ${iptables} -t nat -A BOX_EXTERNAL -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
-    ${iptables} -t nat -A BOX_LOCAL -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
+    ${iptables} -t nat -A BOX_EXTERNAL -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
+    ${iptables} -t nat -A BOX_LOCAL -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
   #  else
   #    其他类型的入站应在此处添加以接收 DNS 流量而不是嗅探
   #    ${iptables} -t nat -A BOX_EXTERNAL -p udp --dport 53 -j REDIRECT --to-ports ${redir_port}
@@ -567,7 +534,7 @@ start_redirect() {
 
   ${iptables} -t nat -I OUTPUT -j BOX_LOCAL
 
-  ${iptables} -A OUTPUT -d 0.0.0.0 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${redir_port} -j REJECT
+  ${iptables} -A OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${redir_port} -j REJECT
 }
 
 stop_redirect() {
@@ -575,8 +542,8 @@ stop_redirect() {
 
   ${iptables} -t nat -D OUTPUT -j BOX_LOCAL
 
-  ${iptables} -D OUTPUT -d 0.0.0.0 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${redir_port} -j REJECT
-  ${iptables} -D OUTPUT -d 0.0.0.0 -p tcp -m owner --uid-owner 0 --gid-owner 3005 -m tcp --dport ${redir_port} -j REJECT
+  ${iptables} -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${redir_port} -j REJECT
+  ${iptables} -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner 0 --gid-owner 3005 -m tcp --dport ${redir_port} -j REJECT
 
   ${iptables} -t nat -F BOX_EXTERNAL
   ${iptables} -t nat -X BOX_EXTERNAL
@@ -599,7 +566,6 @@ start_tproxy() {
 
   # 新增：对 FakeIP 地址范围的流量进行标记和 TPROXY 转发
   if [ "${bin_name}" = "clash" ]; then
-    ${iptables} -t mangle -A BOX_EXTERNAL -d ${clash_fake_ip_range} -p tcp -j MARK --set-mark ${id}
     ${iptables} -t mangle -A BOX_EXTERNAL -d ${clash_fake_ip_range} -p tcp -j TPROXY --on-port ${tproxy_port} --tproxy-mark ${id}
   fi
 
@@ -631,15 +597,11 @@ start_tproxy() {
 
   ${iptables} -t mangle -A BOX_EXTERNAL -p tcp -i lo -j TPROXY --on-port ${tproxy_port} --tproxy-mark ${id}
   ${iptables} -t mangle -A BOX_EXTERNAL -p udp -i lo -j TPROXY --on-port ${tproxy_port} --tproxy-mark ${id}
-  ${iptables} -t mangle -A BOX_EXTERNAL -p tcp -i lo -j MARK --set-mark ${id}
-  ${iptables} -t mangle -A BOX_EXTERNAL -p udp -i lo -j MARK --set-mark ${id}
-
   if [ "${ap_list}" != "" ] ; then
     for ap in ${ap_list[@]} ; do
       ${iptables} -t mangle -A BOX_EXTERNAL -p tcp -i ${ap} -j TPROXY --on-port ${tproxy_port} --tproxy-mark ${id}
       ${iptables} -t mangle -A BOX_EXTERNAL -p udp -i ${ap} -j TPROXY --on-port ${tproxy_port} --tproxy-mark ${id}
-      ${iptables} -t mangle -A BOX_EXTERNAL -p tcp -i ${ap} -j MARK --set-mark ${id}
-      ${iptables} -t mangle -A BOX_EXTERNAL -p udp -i ${ap} -j MARK --set-mark ${id}
+      
     done
     log Info "${ap_list[*]} 透明代理。"
   fi
@@ -728,7 +690,7 @@ start_tproxy() {
   if [ "${iptables}" = "ip6tables -w 100" ] ; then
     ${iptables} -A OUTPUT -d ::1 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${tproxy_port} -j REJECT
   else
-    ${iptables} -A OUTPUT -d 0.0.0.0 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${tproxy_port} -j REJECT
+    ${iptables} -A OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${tproxy_port} -j REJECT
   fi
 
   if [ "${bin_name}" = "clash" ] && [ "${iptables}" = "iptables -w 100" ] ; then
@@ -748,16 +710,16 @@ start_tproxy() {
 
     ${iptables} -t nat -I OUTPUT -j CLASH_DNS_LOCAL
 
-    ${iptables} -t nat -I OUTPUT -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
-    ${iptables} -t nat -I PREROUTING -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
+    ${iptables} -t nat -I OUTPUT -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
+    ${iptables} -t nat -I PREROUTING -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
 
     # 新增 ICMP DNAT 规则
-    ${iptables} -t nat -I OUTPUT -p icmp -j DNAT --to-destination 0.0.0.0
-    ${iptables} -t nat -I PREROUTING -p icmp -j DNAT --to-destination 0.0.0.0
+    ${iptables} -t nat -I OUTPUT -p icmp -j DNAT --to-destination 127.0.0.1
+    ${iptables} -t nat -I PREROUTING -p icmp -j DNAT --to-destination 127.0.0.1
 
     # 为局域网设备添加 ICMP DNAT 规则
     for interface in ${ap_list[@]}; do
-      ${iptables} -t nat -I PREROUTING -i ${interface} -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
+      ${iptables} -t nat -I PREROUTING -i ${interface} -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
     done
 
     # 为局域网设备添加 DNS 转发规则
@@ -769,7 +731,7 @@ start_tproxy() {
 
     # 为局域网设备添加 ICMP DNAT 规则
     for interface in ${ap_list[@]}; do
-      ${iptables} -t nat -I PREROUTING -i ${interface} -p icmp -j DNAT --to-destination 0.0.0.0
+      ${iptables} -t nat -I PREROUTING -i ${interface} -p icmp -j DNAT --to-destination 127.0.0.1
     done
 
     # 添加日志
@@ -830,8 +792,8 @@ stop_tproxy() {
     ${iptables} -D OUTPUT -d ::1 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${tproxy_port} -j REJECT
     ${iptables} -D OUTPUT -d ::1 -p tcp -m owner --uid-owner 0 --gid-owner 3005 -m tcp --dport ${tproxy_port} -j REJECT
   else
-    ${iptables} -D OUTPUT -d 0.0.0.0 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${tproxy_port} -j REJECT
-    ${iptables} -D OUTPUT -d 0.0.0.0 -p tcp -m owner --uid-owner 0 --gid-owner 3005 -m tcp --dport ${tproxy_port} -j REJECT
+    ${iptables} -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner ${box_user} --gid-owner ${box_group} -m tcp --dport ${tproxy_port} -j REJECT
+    ${iptables} -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner 0 --gid-owner 3005 -m tcp --dport ${tproxy_port} -j REJECT
   fi
 
   # Android ip6tables 没有 nat 表
@@ -846,8 +808,8 @@ stop_tproxy() {
   ${iptables} -t nat -F CLASH_DNS_LOCAL
   ${iptables} -t nat -X CLASH_DNS_LOCAL
 
-  ${iptables} -t nat -D OUTPUT -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
-  ${iptables} -t nat -D PREROUTING -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 0.0.0.0
+  ${iptables} -t nat -D OUTPUT -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
+  ${iptables} -t nat -D PREROUTING -d ${clash_fake_ip_range} -p icmp -j DNAT --to-destination 127.0.0.1
 }
 
 enable_ipv6() {
@@ -910,8 +872,6 @@ optimize_network() {
   # 优化 IPv4 参数
   sudo sysctl -w net.ipv4.tcp_rmem='4096 87380 67108864'
   sudo sysctl -w net.ipv4.tcp_wmem='4096 65536 67108864'
-  sudo sysctl -w net.ipv4.udp_rmem_min=8192
-  sudo sysctl -w net.ipv4.udp_wmem_min=8192
   sudo sysctl -w net.ipv4.tcp_mtu_probing=1
 
   # Clash 特定优化
@@ -927,7 +887,6 @@ optimize_network() {
 
   # 增加新的优化功能，带错误处理
   detect_network_interfaces
-  optimize_network_params
   
   # 尝试设置 QoS，但不中断执行
   setup_qos || log Warn "QoS 设置失败，继续执行其他优化"
@@ -949,47 +908,67 @@ optimize_network() {
     log Warn "BBR 不可用，使用默认拥塞控制"
   fi
   
+  # QUIC 所需的基础参数
+  sudo sysctl -w net.ipv4.udp_mem='65536 131072 262144' 2>/dev/null
+  sudo sysctl -w net.ipv4.udp_rmem_min=16384 2>/dev/null
+  sudo sysctl -w net.ipv4.udp_wmem_min=16384 2>/dev/null
+  
+  # QUIC 特定优化
+  sudo sysctl -w net.ipv4.udp_l3mdev_accept=1 2>/dev/null
+  sudo sysctl -w net.ipv4.tcp_window_scaling=1 2>/dev/null
+  
+  # 检查 QUIC 环境变量是否设置
+  if [ "$enable_quic" = true ]; then
+    export GOMAXPROCS=$(nproc)
+    export CLASH_EXPERIMENT_QUIC=true
+    log Info "QUIC 支持已启用 (CLASH_EXPERIMENT_QUIC=true)"
+    log Info "GOMAXPROCS 设置为: $(nproc)"
+  else
+    log Warn "QUIC 支持未启用"
+  fi
+
+  # 验证 QUIC 配置
+  if [ -n "$(sysctl -n net.core.rmem_max 2>/dev/null)" ] && \
+     [ -n "$(sysctl -n net.core.wmem_max 2>/dev/null)" ]; then
+    log Info "QUIC 网络参数配置成功"
+  else
+    log Warn "QUIC 网络参数配置可能不完整"
+  fi
+
+
+  # 启用 BBR 拥塞控制算法
+  sudo sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1
+  sudo sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1
+
   log Info "网络优化设置完成，当前模式: $network_mode"
 }
 
 
-# 新增：根据内核版本应用特定设置
-apply_kernel_specific_settings() {
-  kernel_version=$(uname -r)
-  if [[ "$kernel_version" == 4.* ]]; then
-    log Info "应用内核版本 4.x 特定设置。"
-    # 在此处添加内核版本 4.x 的特定设置
-  elif [[ "$kernel_version" == 5.* ]]; then
-    log Info "应用内核版本 5.x 特定设置。"
-    # 在此处添加内核版本 5.x 的特定设置
-  else
-    log Warn "未识别的内核版本，应用通用设置。"
-    # 在此处添加通用设置
-  fi
-}
 
 # 新增：检测和配置网络接口
 detect_network_interfaces() {
-  # 获取所有活动网络接口
-  network_interfaces=($(ip link show up | grep -v "lo" | awk -F: '{print $2}' | tr -d ' '))
-  
-  for interface in "${network_interfaces[@]}"; do
-    if echo "$interface" | grep -q "wlan"; then
-      network_mode="wifi"
-      active_interface="$interface"
-      break
-    elif echo "$interface" | grep -q "eth"; then
-      network_mode="ethernet"
-      active_interface="$interface"
-      break
-    elif echo "$interface" | grep -q "rmnet"; then
-      network_mode="mobile"
-      active_interface="$interface"
-      break
-    fi
+  # 获取所有路由信息
+  route_info=$(ip route show)
+
+  # 初始化端口列表
+  interfaces=()
+
+  # 检查并收集所有 wlan 端口
+  for interface in $(echo "$route_info" | grep "dev wlan" | awk '{print $3}'); do
+    interfaces+=("$interface")
   done
-  
-  log Info "当前活动网络接口: $active_interface ($network_mode)"
+
+  # 检查并收集所有 rmnet 端口
+  for interface in $(echo "$route_info" | grep "dev rmnet" | awk '{print $3}'); do
+    interfaces+=("$interface")
+  done
+
+  # 检查并收集所有 eth 端口
+  for interface in $(echo "$route_info" | grep "dev eth" | awk '{print $3}'); do
+    interfaces+=("$interface")
+  done
+
+  log Info "检测到的活动网络接口: ${interfaces[*]}"
 }
 
 setup_qos() {
@@ -999,28 +978,36 @@ setup_qos() {
     return 1
   fi
 
-  # 清理现有 QoS 规则
-  tc qdisc del dev "$active_interface" root 2>/dev/null
+  for interface in "${interfaces[@]}"; do
+    # 设置 MTU
+    if ! ip link set dev "$interface" mtu 10000 2>/dev/null; then
+      log Warn "无法设置 $interface 的 MTU，跳过该接口的 MTU 设置"
+      continue
+    fi
 
-  # 添加新的 QoS 规则，带错误检查
-  if ! tc qdisc add dev "$active_interface" root handle 1: htb default 10 2>/dev/null; then
-    log Warn "无法添加 QoS 根规则，跳过 QoS 设置"
-    return 1
-  fi
+    # 清理现有 QoS 规则
+    tc qdisc del dev "$interface" root 2>/dev/null
 
-  if ! tc class add dev "$active_interface" parent 1: classid 1:1 htb rate 1gbit burst 15k 2>/dev/null; then
-    log Warn "无法添加 QoS 基础类，跳过剩余 QoS 设置"
-    return 1
-  fi
+    # 添加新的 QoS 规则，带错误检查
+    if ! tc qdisc add dev "$interface" root handle 1: htb default 10 2>/dev/null; then
+      log Warn "无法添加 $interface 的 QoS 根规则，跳过该接口的 QoS 设置"
+      continue
+    fi
 
-  # 添加优先级类，忽略错误
-  tc class add dev "$active_interface" parent 1:1 classid 1:10 htb rate 500mbit ceil 1gbit burst 15k prio 1 2>/dev/null
-  tc class add dev "$active_interface" parent 1:1 classid 1:20 htb rate 300mbit ceil 500mbit burst 15k prio 2 2>/dev/null
-  tc class add dev "$active_interface" parent 1:1 classid 1:30 htb rate 200mbit ceil 300mbit burst 15k prio 3 2>/dev/null
+    if ! tc class add dev "$interface" parent 1: classid 1:1 htb rate 1gbit burst 15k 2>/dev/null; then
+      log Warn "无法添加 $interface 的 QoS 基础类，跳过该接口的剩余 QoS 设置"
+      continue
+    fi
 
-  log Info "QoS 设置完成"
-  return 0
+    # 添加优先级类，忽略错误
+    tc class add dev "$interface" parent 1:1 classid 1:10 htb rate 500mbit ceil 1gbit burst 15k prio 1 2>/dev/null
+    tc class add dev "$interface" parent 1:1 classid 1:20 htb rate 300mbit ceil 500mbit burst 15k prio 2 2>/dev/null
+    tc class add dev "$interface" parent 1:1 classid 1:30 htb rate 200mbit ceil 300mbit burst 15k prio 3 2>/dev/null
+
+    log Info "$interface 的 QoS 设置完成"
+  done
 }
+
 
 setup_ipset() {
   # 检查 ipset 命令是否可用
@@ -1048,18 +1035,19 @@ setup_ipset() {
 }
 
 
+
 # 等待用户登录
 wait_until_login
 
 # 开始服务
-rm ${pid_file} >> /dev/null 2>&1
-mkdir -p ${run_path}
+rm "${pid_file}" >> /dev/null 2>&1
+mkdir -p "${run_path}"
 
-if [ ! -f ${box_path}/manual ] && [ ! -f ${module_dir}/disable ] ; then
-  mv ${run_path}/run.log ${run_path}/run.log.bak 2>/dev/null
-  mv ${run_path}/run_error.log ${run_path}/run_error.log.bak 2>/dev/null
+if [ ! -f "${box_path}/manual" ]; then
+  mv "${run_path}/run.log" "${run_path}/run.log.bak" 2>/dev/null
+  mv "${run_path}/run_error.log" "${run_path}/run_error.log.bak" 2>/dev/null
 
-  start_service >> ${run_path}/run.log 2>> ${run_path}/run_error.log
+  start_service >> "${run_path}/run.log" 2>> "${run_path}/run_error.log"
 fi
 
 # 处理命令行参数
@@ -1085,9 +1073,6 @@ esac
 
 # 应用网络优化设置
 optimize_network
-
-# 应用内核特定设置
-apply_kernel_specific_settings
 
 # 在主程序中添加定期清理
 (while true; do sleep 3600; clean_conntrack; done) &
